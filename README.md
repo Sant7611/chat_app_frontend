@@ -13,9 +13,9 @@ Backend contract reviewed against commit `78210d266ccb282222b67da3a22213f97b56dd
 - Conversation list
 - Conversation messages
 - Send message
-- Red unread badge for new incoming messages
-- Lightweight 5-second REST polling while WebSocket is disabled
-- WebSocket hook present but disabled by default until the backend exposes a WS route
+- WebSocket hook prepared but disabled until the backend exposes a WS route
+- Red unread badge logic reserved for future WebSocket events only
+- No REST polling for notifications
 - No profile pages and no extra dashboard features
 
 ## Backend endpoints used
@@ -32,6 +32,8 @@ The current backend has no user-list/search endpoint, so this frontend does not 
 
 ## Run locally
 
+Use Node.js 20.19+.
+
 Start Django on port 8000, then:
 
 ```bash
@@ -41,18 +43,19 @@ npm run dev
 
 Open `http://localhost:5173`.
 
-Vite proxies `/api/*` to `http://localhost:8000/*`. This avoids browser CORS problems during local development without changing the Django backend.
+Vite proxies `/api/*` to `http://localhost:8000/*`, so local development does not require changing Django CORS settings.
 
-## Unread messages before WebSocket
+## Notifications
 
-Because the backend does not provide WebSocket events or an unread-count endpoint yet, the frontend checks the existing conversation/message REST endpoints every 5 seconds.
+Notifications are paused until the backend WebSocket implementation exists.
 
-- The first check establishes a baseline and does not mark old messages as newly unread.
-- A later incoming message in a conversation that is not open increases that conversation's red badge.
-- Opening the conversation clears its frontend unread badge.
-- This unread state is session-only for now because the backend does not update/expose `read_at` through these APIs.
+The frontend does not poll REST endpoints for new-message notifications.
 
-This is intentionally a temporary fallback. Once WebSocket is enabled, polling stops.
+When WebSocket is implemented later:
+
+- an incoming WebSocket message for the open conversation can be appended immediately;
+- an incoming WebSocket message for another conversation can increase that conversation's red unread badge;
+- opening that conversation clears the frontend unread badge.
 
 ## WebSocket later
 
