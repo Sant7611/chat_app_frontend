@@ -7,7 +7,6 @@ import { useChatSocket } from './hooks/useChatSocket.js'
 
 const WS_ENABLED = import.meta.env.VITE_WS_ENABLED === 'true'
 const WS_URL = import.meta.env.VITE_WS_URL || ''
-const POLL_INTERVAL_MS = 5000
 
 function normalizeMessages(data) {
   if (!Array.isArray(data)) return []
@@ -18,10 +17,6 @@ function normalizeMessages(data) {
     if (aTime !== bTime) return aTime - bTime
     return Number(a.id || 0) - Number(b.id || 0)
   })
-}
-
-function latestMessageId(messages) {
-  return messages.length ? messages[messages.length - 1].id : null
 }
 
 export default function App() {
@@ -40,9 +35,6 @@ export default function App() {
 
   const activeUserIdRef = useRef(initialSession?.user?.id || null)
   const selectedConversationRef = useRef(null)
-  const lastMessageIdRef = useRef(new Map())
-  const initializedConversationIdsRef = useRef(new Set())
-  const pollInFlightRef = useRef(false)
 
   useEffect(() => {
     selectedConversationRef.current = selectedConversation
@@ -52,9 +44,6 @@ export default function App() {
     clearSession()
     activeUserIdRef.current = null
     selectedConversationRef.current = null
-    lastMessageIdRef.current.clear()
-    initializedConversationIdsRef.current.clear()
-    pollInFlightRef.current = false
 
     setUser(null)
     setConversations([])
@@ -103,8 +92,6 @@ export default function App() {
 
     activeUserIdRef.current = session.user.id
     selectedConversationRef.current = null
-    lastMessageIdRef.current.clear()
-    initializedConversationIdsRef.current.clear()
 
     setUser(session.user)
     setAuthOpen(false)
@@ -145,8 +132,6 @@ export default function App() {
       if (activeUserIdRef.current !== requestUserId) return
 
       const nextMessages = normalizeMessages(data)
-      lastMessageIdRef.current.set(conversationId, latestMessageId(nextMessages))
-      initializedConversationIdsRef.current.add(conversationId)
 
       if (selectedConversationRef.current?.id === conversationId) {
         setMessages(nextMessages)
@@ -183,8 +168,6 @@ export default function App() {
       if (activeUserIdRef.current !== requestUserId) return false
 
       const nextMessages = normalizeMessages(data)
-      lastMessageIdRef.current.set(conversationId, latestMessageId(nextMessages))
-      initializedConversationIdsRef.current.add(conversationId)
 
       if (selectedConversationRef.current?.id === conversationId) {
         setMessages(nextMessages)
@@ -203,97 +186,9 @@ export default function App() {
     }
   }
 
-  const pollForNewMessages = useCallback(async () => {
-    if (!user || WS_ENABLED || pollInFlightRef.current || document.hidden) return
-
-    const requestUserId = user.id
-    pollInFlightRef.current = true
-
-    try {
-      const conversationData = await api.getConversations()
-      if (activeUserIdRef.current !== requestUserId) return
-
-      const latestConversations = Array.isArray(conversationData) ? conversationData : []
-      setConversations(latestConversations)
-      setConversationError('')
-
-      for (const conversation of latestConversations) {
-        if (activeUserIdRef.current !== requestUserId) return
-
-        const conversationId = conversation.id
-        const data = await api.getMessages(conversationId)
-        if (activeUserIdRef.current !== requestUserId) return
-
-        const nextMessages = normalizeMessages(data)
-        const nextLatestId = latestMessageId(nextMessages)
-        const alreadyInitialized = initializedConversationIdsRef.current.has(conversationId)
-        const previousLatestId = lastMessageIdRef.current.get(conversationId)
-        const isSelected = selectedConversationRef.current?.id === conversationId
-
-        if (!alreadyInitialized) {
-          initializedConversationIdsRef.current.add(conversationId)
-          lastMessageIdRef.current.set(conversationId, nextLatestId)
-
-          if (isSelected) setMessages(nextMessages)
-          continue
-        }
-
-        if (nextLatestId === previousLatestId) continue
-
-        let newMessages = []
-        if (previousLatestId == null) {
-          newMessages = nextMessages
-        } else {
-          const previousIndex = nextMessages.findIndex((message) => message.id === previousLatestId)
-          newMessages = previousIndex >= 0
-            ? nextMessages.slice(previousIndex + 1)
-            : nextMessages.slice(-1)
-        }
-
-        lastMessageIdRef.current.set(conversationId, nextLatestId)
-
-        if (isSelected) {
-          setMessages(nextMessages)
-          setUnread((current) => ({ ...current, [conversationId]: 0 }))
-          continue
-        }
-
-        const incomingCount = newMessages.filter(
-          (message) => message.sender?.id !== requestUserId,
-        ).length
-
-        if (incomingCount > 0) {
-          setUnread((current) => ({
-            ...current,
-            [conversationId]: (current[conversationId] || 0) + incomingCount,
-          }))
-        }
-      }
-    } catch (err) {
-      if (activeUserIdRef.current !== requestUserId) return
-
-      if (err.message?.toLowerCase().includes('session expired')) {
-        forceLogout()
-      } else {
-        setConversationError((current) => current || 'Could not refresh conversations.')
-      }
-    } finally {
-      pollInFlightRef.current = false
-    }
-  }, [user, forceLogout])
-
-  useEffect(() => {
-    if (!user || WS_ENABLED) return undefined
-
-    pollForNewMessages()
-    const intervalId = window.setInterval(pollForNewMessages, POLL_INTERVAL_MS)
-
-    return () => window.clearInterval(intervalId)
-  }, [user, pollForNewMessages])
-
   const handleSocketMessage = useCallback((event) => {
-    // Expected future shape: { type: 'message', conversation_id, message }.
-    // This path is inactive while VITE_WS_ENABLED is false.
+    // Future WebSocket-only notification path.
+    // This is inactive until VITE_WS_ENABLED=true and the backend WS contract exists.
     if (event?.type !== 'message' || !event?.conversation_id || !event?.message) return
 
     const conversationId = Number(event.conversation_id)
