@@ -13,7 +13,8 @@ Backend contract reviewed against commit `78210d266ccb282222b67da3a22213f97b56dd
 - Conversation list
 - Conversation messages
 - Send message
-- Red unread badge state ready for incoming WebSocket messages
+- Red unread badge for new incoming messages
+- Lightweight 5-second REST polling while WebSocket is disabled
 - WebSocket hook present but disabled by default until the backend exposes a WS route
 - No profile pages and no extra dashboard features
 
@@ -41,6 +42,17 @@ npm run dev
 Open `http://localhost:5173`.
 
 Vite proxies `/api/*` to `http://localhost:8000/*`. This avoids browser CORS problems during local development without changing the Django backend.
+
+## Unread messages before WebSocket
+
+Because the backend does not provide WebSocket events or an unread-count endpoint yet, the frontend checks the existing conversation/message REST endpoints every 5 seconds.
+
+- The first check establishes a baseline and does not mark old messages as newly unread.
+- A later incoming message in a conversation that is not open increases that conversation's red badge.
+- Opening the conversation clears its frontend unread badge.
+- This unread state is session-only for now because the backend does not update/expose `read_at` through these APIs.
+
+This is intentionally a temporary fallback. Once WebSocket is enabled, polling stops.
 
 ## WebSocket later
 
@@ -75,3 +87,12 @@ The frontend currently expects a future incoming message payload shaped like:
 ```
 
 That payload is only a frontend integration point for now; the backend WS contract does not exist yet.
+
+## Current backend notes
+
+The frontend can work with the present REST contract, but two backend concerns remain:
+
+1. The chat views inherit the project's global `AllowAny` permission. They should eventually use `IsAuthenticated`.
+2. `LogoutView` calls `RefreshToken(...).blacklist()`, but the backend currently does not include `rest_framework_simplejwt.token_blacklist` in `INSTALLED_APPS`. Add that app and run `python manage.py migrate` if server-side refresh-token revocation is required.
+
+The frontend still clears its browser session if the logout endpoint fails, so the user is logged out locally.
