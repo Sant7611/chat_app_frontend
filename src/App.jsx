@@ -38,6 +38,7 @@ export default function App() {
   const [messageError, setMessageError] = useState('')
   const [sending, setSending] = useState(false)
 
+  const activeUserIdRef = useRef(initialSession?.user?.id || null)
   const selectedConversationRef = useRef(null)
   const lastMessageIdRef = useRef(new Map())
   const initializedConversationIdsRef = useRef(new Set())
@@ -49,33 +50,46 @@ export default function App() {
 
   const forceLogout = useCallback(() => {
     clearSession()
+    activeUserIdRef.current = null
     selectedConversationRef.current = null
     lastMessageIdRef.current.clear()
     initializedConversationIdsRef.current.clear()
+    pollInFlightRef.current = false
+
     setUser(null)
     setConversations([])
     setSelectedConversation(null)
     setMessages([])
     setUnread({})
+    setConversationLoading(false)
     setConversationError('')
+    setMessageLoading(false)
     setMessageError('')
+    setSending(false)
     setAuthOpen(true)
   }, [])
 
-  const loadConversations = useCallback(async () => {
+  const loadConversations = useCallback(async ({ showLoading = true } = {}) => {
     if (!user) return
 
-    setConversationLoading(true)
+    const requestUserId = user.id
+
+    if (showLoading) setConversationLoading(true)
     setConversationError('')
 
     try {
       const data = await api.getConversations()
+      if (activeUserIdRef.current !== requestUserId) return
       setConversations(Array.isArray(data) ? data : [])
     } catch (err) {
+      if (activeUserIdRef.current !== requestUserId) return
+
       if (err.message?.toLowerCase().includes('session expired')) forceLogout()
       else setConversationError(err.message || 'Could not load conversations.')
     } finally {
-      setConversationLoading(false)
+      if (showLoading && activeUserIdRef.current === requestUserId) {
+        setConversationLoading(false)
+      }
     }
   }, [user, forceLogout])
 
@@ -86,14 +100,20 @@ export default function App() {
   async function handleLogin(credentials) {
     const session = await api.login(credentials)
     saveSession(session)
+
+    activeUserIdRef.current = session.user.id
+    selectedConversationRef.current = null
     lastMessageIdRef.current.clear()
     initializedConversationIdsRef.current.clear()
-    setUnread({})
+
     setUser(session.user)
     setAuthOpen(false)
+    setConversations([])
     setSelectedConversation(null)
-    selectedConversationRef.current = null
     setMessages([])
+    setUnread({})
+    setConversationError('')
+    setMessageError('')
   }
 
   async function handleSignup(payload) {
@@ -112,6 +132,8 @@ export default function App() {
 
   async function selectConversation(conversation) {
     const conversationId = conversation.id
+    const requestUserId = activeUserIdRef.current
+
     selectedConversationRef.current = conversation
     setSelectedConversation(conversation)
     setUnread((current) => ({ ...current, [conversationId]: 0 }))
@@ -120,8 +142,9 @@ export default function App() {
 
     try {
       const data = await api.getMessages(conversationId)
-      const nextMessages = normalizeMessages(data)
+      if (activeUserIdRef.current !== requestUserId) return
 
+      const nextMessages = normalizeMessages(data)
       lastMessageIdRef.current.set(conversationId, latestMessageId(nextMessages))
       initializedConversationIdsRef.current.add(conversationId)
 
@@ -129,13 +152,18 @@ export default function App() {
         setMessages(nextMessages)
       }
     } catch (err) {
+      if (activeUserIdRef.current !== requestUserId) return
+
       if (err.message?.toLowerCase().includes('session expired')) {
         forceLogout()
       } else if (selectedConversationRef.current?.id === conversationId) {
         setMessageError(err.message || 'Could not load messages.')
       }
     } finally {
-      if (selectedConversationRef.current?.id === conversationId) {
+      if (
+        activeUserIdRef.current === requestUserId
+        && selectedConversationRef.current?.id === conversationId
+      ) {
         setMessageLoading(false)
       }
     }
@@ -143,7 +171,8 @@ export default function App() {
 
   async function sendMessage(content) {
     const conversationId = selectedConversationRef.current?.id
-    if (!conversationId) return false
+    const requestUserId = activeUserIdRef.current
+    if (!conversationId || !requestUserId) return false
 
     setSending(true)
     setMessageError('')
@@ -151,8 +180,9 @@ export default function App() {
     try {
       await api.sendMessage(conversationId, content)
       const data = await api.getMessages(conversationId)
-      const nextMessages = normalizeMessages(data)
+      if (activeUserIdRef.current !== requestUserId) return false
 
+      const nextMessages = normalizeMessages(data)
       lastMessageIdRef.current.set(conversationId, latestMessageId(nextMessages))
       initializedConversationIdsRef.current.add(conversationId)
 
@@ -160,31 +190,40 @@ export default function App() {
         setMessages(nextMessages)
       }
 
-      loadConversations()
+      loadConversations({ showLoading: false })
       return true
     } catch (err) {
+      if (activeUserIdRef.current !== requestUserId) return false
+
       if (err.message?.toLowerCase().includes('session expired')) forceLogout()
       else setMessageError(err.message || 'Could not send message.')
       return false
     } finally {
-      setSending(false)
+      if (activeUserIdRef.current === requestUserId) setSending(false)
     }
   }
 
   const pollForNewMessages = useCallback(async () => {
     if (!user || WS_ENABLED || pollInFlightRef.current || document.hidden) return
 
+    const requestUserId = user.id
     pollInFlightRef.current = true
 
     try {
       const conversationData = await api.getConversations()
+      if (activeUserIdRef.current !== requestUserId) return
+
       const latestConversations = Array.isArray(conversationData) ? conversationData : []
       setConversations(latestConversations)
       setConversationError('')
 
       for (const conversation of latestConversations) {
+        if (activeUserIdRef.current !== requestUserId) return
+
         const conversationId = conversation.id
         const data = await api.getMessages(conversationId)
+        if (activeUserIdRef.current !== requestUserId) return
+
         const nextMessages = normalizeMessages(data)
         const nextLatestId = latestMessageId(nextMessages)
         const alreadyInitialized = initializedConversationIdsRef.current.has(conversationId)
@@ -220,7 +259,7 @@ export default function App() {
         }
 
         const incomingCount = newMessages.filter(
-          (message) => message.sender?.id !== user.id,
+          (message) => message.sender?.id !== requestUserId,
         ).length
 
         if (incomingCount > 0) {
@@ -231,6 +270,8 @@ export default function App() {
         }
       }
     } catch (err) {
+      if (activeUserIdRef.current !== requestUserId) return
+
       if (err.message?.toLowerCase().includes('session expired')) {
         forceLogout()
       } else {
@@ -256,6 +297,7 @@ export default function App() {
     if (event?.type !== 'message' || !event?.conversation_id || !event?.message) return
 
     const conversationId = Number(event.conversation_id)
+
     if (selectedConversationRef.current?.id === conversationId) {
       setMessages((current) => normalizeMessages(
         current.some((item) => item.id === event.message.id)
@@ -263,15 +305,15 @@ export default function App() {
           : [...current, event.message],
       ))
       setUnread((current) => ({ ...current, [conversationId]: 0 }))
-    } else if (event.message.sender?.id !== user?.id) {
+    } else if (event.message.sender?.id !== activeUserIdRef.current) {
       setUnread((current) => ({
         ...current,
         [conversationId]: (current[conversationId] || 0) + 1,
       }))
     }
 
-    loadConversations()
-  }, [user, loadConversations])
+    loadConversations({ showLoading: false })
+  }, [loadConversations])
 
   useChatSocket({
     enabled: WS_ENABLED && Boolean(user),
