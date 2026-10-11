@@ -8,7 +8,7 @@ function initialFor(person) {
   return source.charAt(0).toUpperCase()
 }
 
-export default function ConversationList({ conversations, currentUser, selectedId, unread, loading, error, onSelect, onLogout }) {
+export default function ConversationList({ conversations, currentUser, selectedId, unread, loading, error, onSelect, onSearch, onLogout }) {
   return (
     <aside className="sidebar">
       <header className="sidebar-header">
@@ -27,13 +27,17 @@ export default function ConversationList({ conversations, currentUser, selectedI
         </div>
       </div>
 
+      <button className="new-chat-button" type="button" onClick={onSearch}>
+        <span aria-hidden="true">+</span> New chat
+      </button>
+
       <div className="conversation-scroll">
         {loading && <div className="list-state">Loading conversations…</div>}
         {!loading && error && <div className="list-state error-text">{error}</div>}
         {!loading && !error && conversations.length === 0 && (
           <div className="list-state">
             <strong>No conversations yet.</strong>
-            <span>The current backend does not expose a user directory, so this frontend only lists existing conversations.</span>
+            <span>Use New chat to find someone by username or email.</span>
           </div>
         )}
 
