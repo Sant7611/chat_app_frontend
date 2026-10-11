@@ -159,3 +159,26 @@ export const api = {
     })
   },
 }
+
+
+// Refresh an expiring access token before opening a WebSocket.
+// The connection is authenticated at handshake time by Django.
+export async function getWebSocketAccessToken() {
+  const token = getAccessToken()
+  if (!token) throw new Error('Session expired. Please log in again.')
+
+  let expiry = null
+  try {
+    const encoded = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
+    const payload = JSON.parse(atob(encoded))
+    expiry = Number(payload.exp) * 1000
+  } catch {
+    // Let the server validate malformed tokens.
+  }
+
+  if (expiry && expiry <= Date.now() + 30_000) {
+    return refreshAccessToken()
+  }
+
+  return token
+}
