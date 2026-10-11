@@ -2,7 +2,7 @@
 
 A deliberately small React SPA for the Django/DRF backend in `Sant7611/chat_app`.
 
-Backend contract reviewed against commit `78210d266ccb282222b67da3a22213f97b56dd6d` (2026-10-07, `messages/conversation near completion`).
+WebSocket contract reviewed against backend commit `153269c29f9c8c0126e8d013593f4f09375b11b8` (2026-10-11, `ws completed`).
 
 ## Included
 
@@ -12,9 +12,10 @@ Backend contract reviewed against commit `78210d266ccb282222b67da3a22213f97b56dd
 - Logout
 - Conversation list
 - Conversation messages
-- Send message
-- WebSocket hook prepared but disabled until the backend exposes a WS route
-- Red unread badge logic reserved for future WebSocket events only
+- Send messages through the WebSocket (avoids saving duplicate messages via HTTP)
+- One active WebSocket connection joined to the authenticated user's personal Redis group
+- Live messages in the selected conversation
+- Red unread badges for incoming messages in other conversations
 - No REST polling for notifications
 - No profile pages and no extra dashboard features
 
@@ -45,57 +46,48 @@ Open `http://localhost:5173`.
 
 Vite proxies `/api/*` to `http://localhost:8000/*`, so local development does not require changing Django CORS settings.
 
-## Notifications
+## Live messages and notifications
 
-Notifications are paused until the backend WebSocket implementation exists.
+WebSocket support is enabled by default. Start **Daphne** and **Redis** on the backend and run the Vite frontend.
 
-The frontend does not poll REST endpoints for new-message notifications.
+The current backend uses `/ws/chat/<conversation_id>/?token=<access JWT>`, even though each connected consumer subscribes to a **personal user Redis group**. The frontend therefore opens **one socket at a time** using the selected conversation's ID (or the first listed conversation if no chat has been opened).
 
-When WebSocket is implemented later:
+- Incoming events from **any** conversation arrive on this personal group while the socket is connected.
+- Events for the open conversation append directly to the chat, deduplicated by message ID.
+- Events from other conversations increment a **red unread badge**, unless sent by the current user.
+- Opening a conversation clears its badge. Unread counts are browser-session-only; the backend does not yet provide persistent per-conversation unread counts.
+- Sending uses `{"message":"Hello"}` over the socket, since the current Consumer saves and broadcasts only WebSocket sends.
+- REST endpoints still load conversation lists and message history. There is no notification polling.
 
-- an incoming WebSocket message for the open conversation can be appended immediately;
-- an incoming WebSocket message for another conversation can increase that conversation's red unread badge;
-- opening that conversation clears the frontend unread badge.
+**Current backend limitation:** Switching the active conversation reconnects the one socket to a different `/ws/chat/<id>/` URL because the Consumer chooses the sending conversation from the URL. A later backend update to a user-level `/ws/` endpoint with `conversation_id` inside outgoing JSON would remove these reconnects. Reconnecting can miss events; persistent unread counts and missed-message recovery require backend support.
 
-## WebSocket later
+## Configuration
 
-WebSocket is intentionally disabled now.
-
-When the backend adds Django Channels routing, add an `.env.local` file:
+In `.env.local` you can override the WebSocket endpoint or disable it explicitly:
 
 ```env
 VITE_WS_ENABLED=true
 VITE_WS_URL=ws://localhost:8000/ws/chat/
 ```
 
-The current hook sends the JWT access token as a `?token=` query parameter. If the future backend uses a different authentication format or route, update `src/hooks/useChatSocket.js` to match it.
+The default URL uses the frontend hostname and port 8000. If disabled or disconnected, the Send button remains unavailable so HTTP cannot accidentally save a message without broadcasting it.
 
-The frontend currently expects a future incoming message payload shaped like:
+Access JWTs are passed as `?token=` to match the current backend JWT middleware. This is for local learning; production authentication should avoid tokens in WebSocket query strings where URLs may be logged.
+
+The backend event payload is:
 
 ```json
 {
-  "type": "message",
+  "id": 25,
   "conversation_id": 1,
-  "message": {
-    "id": 25,
-    "content": "Hello",
-    "sender": {
-      "id": "uuid",
-      "display_name": "Name",
-      "email": "user@example.com"
-    },
-    "created_at": "2026-10-07T09:00:00Z"
-  }
+  "message": "Hello",
+  "sender_id": "user-uuid",
+  "created_at": "2026-10-11T08:00:00+00:00"
 }
 ```
 
-That payload is only a frontend integration point for now; the backend WS contract does not exist yet.
+The frontend maps that event to its REST-style message shape (`content`, `sender.id`) before rendering.
 
-## Current backend notes
+## Backend notes
 
-The frontend can work with the present REST contract, but two backend concerns remain:
-
-1. The chat views inherit the project's global `AllowAny` permission. They should eventually use `IsAuthenticated`.
-2. `LogoutView` calls `RefreshToken(...).blacklist()`, but the backend currently does not include `rest_framework_simplejwt.token_blacklist` in `INSTALLED_APPS`. Add that app and run `python manage.py migrate` if server-side refresh-token revocation is required.
-
-The frontend still clears its browser session if the logout endpoint fails, so the user is logged out locally.
+The Django app must have `CHANNEL_LAYERS` configured and Redis running. The current backend's HTTP conversation/message views use the global `AllowAny` permission setting; protect them with `IsAuthenticated` before deployment. A separate SimpleJWT blacklist app/migration is required if refresh-token blacklisting is used.
