@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import AuthModal from './components/AuthModal.jsx'
 import ConversationList from './components/ConversationList.jsx'
 import ChatWindow from './components/ChatWindow.jsx'
+import UserSearchModal from './components/UserSearchModal.jsx'
 import { api, clearSession, getStoredSession, saveSession } from './api/client.js'
 import { useChatSocket } from './hooks/useChatSocket.js'
 
@@ -23,6 +24,7 @@ export default function App() {
   const initialSession = useMemo(() => getStoredSession(), [])
   const [user, setUser] = useState(initialSession?.user || null)
   const [authOpen, setAuthOpen] = useState(!initialSession)
+  const [searchOpen, setSearchOpen] = useState(false)
   const [conversations, setConversations] = useState([])
   const [selectedConversation, setSelectedConversation] = useState(null)
   const [messages, setMessages] = useState([])
@@ -56,6 +58,7 @@ export default function App() {
     setMessageLoading(false)
     setMessageError('')
     setAuthOpen(true)
+    setSearchOpen(false)
   }, [])
 
   const loadConversations = useCallback(async ({ showLoading = true } = {}) => {
@@ -96,6 +99,7 @@ export default function App() {
 
     setUser(session.user)
     setAuthOpen(false)
+    setSearchOpen(false)
     setConversations([])
     setSelectedConversation(null)
     setMessages([])
@@ -157,6 +161,42 @@ export default function App() {
         setMessageLoading(false)
       }
     }
+  }
+
+  async function startConversationWith(selectedUser) {
+    const requestUserId = activeUserIdRef.current
+    if (!requestUserId || !selectedUser?.id) {
+      throw new Error('Please log in and select a valid user.')
+    }
+
+    // The backend POST endpoint is get-or-create: an existing conversation
+    // is reused instead of creating a second direct chat.
+    const created = await api.createConversation(selectedUser.id)
+    if (activeUserIdRef.current !== requestUserId) {
+      throw new Error('Session changed. Please try again.')
+    }
+    if (created?.id == null) {
+      throw new Error('Backend did not return a conversation ID.')
+    }
+
+    // POST uses ConversationCreateSerializer and only returns the ID.
+    // Refetch GET so the chat header has both participants' details.
+    const data = await api.getConversations()
+    if (activeUserIdRef.current !== requestUserId) {
+      throw new Error('Session changed. Please try again.')
+    }
+
+    const updatedConversations = Array.isArray(data) ? data : data?.results || []
+    const conversation = updatedConversations.find(
+      (item) => String(item.id) === String(created.id),
+    )
+    if (!conversation) {
+      throw new Error('Conversation was saved but could not be found. Refresh and try again.')
+    }
+
+    setConversations(updatedConversations)
+    setSearchOpen(false)
+    await selectConversation(conversation)
   }
 
   async function sendMessage(content) {
@@ -244,6 +284,7 @@ export default function App() {
           loading={conversationLoading}
           error={conversationError}
           onSelect={selectConversation}
+          onSearch={() => setSearchOpen(true)}
           onLogout={handleLogout}
         />
         <ChatWindow
@@ -256,6 +297,14 @@ export default function App() {
           onSend={sendMessage}
         />
       </div>
+
+      {searchOpen && !authOpen && (
+        <UserSearchModal
+          onClose={() => setSearchOpen(false)}
+          onSelect={startConversationWith}
+          onAuthError={forceLogout}
+        />
+      )}
 
       <AuthModal
         open={authOpen}
