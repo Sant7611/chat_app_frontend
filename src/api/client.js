@@ -148,6 +148,17 @@ export const api = {
     return request('/chat/conversation/')
   },
 
+  async searchUsers(query, { signal } = {}) {
+    return request(`/chat/users/search/?q=${encodeURIComponent(query.trim())}`, { signal })
+  },
+
+  async createConversation(otherUserId) {
+    return request('/chat/conversation/', {
+      method: 'POST',
+      body: JSON.stringify({ other_user_id: otherUserId }),
+    })
+  },
+
   async getMessages(conversationId) {
     return request(`/chat/conversation/${conversationId}/messages/`)
   },
