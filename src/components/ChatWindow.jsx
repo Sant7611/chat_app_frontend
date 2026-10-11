@@ -10,7 +10,7 @@ function formatTime(value) {
   return new Intl.DateTimeFormat([], { hour: 'numeric', minute: '2-digit' }).format(new Date(value))
 }
 
-export default function ChatWindow({ conversation, currentUser, messages, loading, error, sending, onSend }) {
+export default function ChatWindow({ conversation, currentUser, messages, loading, error, socketReady, onSend }) {
   const [content, setContent] = useState('')
   const bottomRef = useRef(null)
   const person = getOtherParticipant(conversation, currentUser?.id)
@@ -32,7 +32,7 @@ export default function ChatWindow({ conversation, currentUser, messages, loadin
   async function submit(event) {
     event.preventDefault()
     const value = content.trim()
-    if (!value || sending) return
+    if (!value || !socketReady) return
 
     const sent = await onSend(value)
     if (sent) setContent('')
@@ -44,7 +44,7 @@ export default function ChatWindow({ conversation, currentUser, messages, loadin
         <div className="avatar">{(person?.display_name || person?.email || '?').charAt(0).toUpperCase()}</div>
         <div className="truncate">
           <strong>{person?.display_name || person?.email || `Conversation ${conversation.id}`}</strong>
-          <span>{person?.email || 'Conversation'}</span>
+          <span>{socketReady ? 'Live' : 'Connecting to live chat…'}</span>
         </div>
       </header>
 
@@ -77,8 +77,8 @@ export default function ChatWindow({ conversation, currentUser, messages, loadin
           aria-label="Message"
           maxLength={5000}
         />
-        <button className="send-button" type="submit" disabled={!content.trim() || sending}>
-          {sending ? 'Sending…' : 'Send'}
+        <button className="send-button" type="submit" disabled={!content.trim() || !socketReady}>
+          {socketReady ? 'Send' : 'Connecting…'}
         </button>
       </form>
     </main>
