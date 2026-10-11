@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import AuthModal from './components/AuthModal.jsx'
 import ConversationList from './components/ConversationList.jsx'
 import ChatWindow from './components/ChatWindow.jsx'
-import { api, clearSession, getAccessToken, getStoredSession, saveSession } from './api/client.js'
+import { api, clearSession, getStoredSession, saveSession } from './api/client.js'
 import { useChatSocket } from './hooks/useChatSocket.js'
 
-const WS_ENABLED = import.meta.env.VITE_WS_ENABLED === 'true'
-const WS_URL = import.meta.env.VITE_WS_URL || ''
+const WS_ENABLED = import.meta.env.VITE_WS_ENABLED !== 'false'
+const WS_URL = import.meta.env.VITE_WS_URL || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8000/ws/chat/`
 
 function normalizeMessages(data) {
   if (!Array.isArray(data)) return []
@@ -31,10 +31,10 @@ export default function App() {
   const [conversationError, setConversationError] = useState('')
   const [messageLoading, setMessageLoading] = useState(false)
   const [messageError, setMessageError] = useState('')
-  const [sending, setSending] = useState(false)
 
   const activeUserIdRef = useRef(initialSession?.user?.id || null)
   const selectedConversationRef = useRef(null)
+  const receivedEventsRef = useRef(new Set())
 
   useEffect(() => {
     selectedConversationRef.current = selectedConversation
@@ -44,6 +44,7 @@ export default function App() {
     clearSession()
     activeUserIdRef.current = null
     selectedConversationRef.current = null
+    receivedEventsRef.current.clear()
 
     setUser(null)
     setConversations([])
@@ -54,7 +55,6 @@ export default function App() {
     setConversationError('')
     setMessageLoading(false)
     setMessageError('')
-    setSending(false)
     setAuthOpen(true)
   }, [])
 
@@ -92,6 +92,7 @@ export default function App() {
 
     activeUserIdRef.current = session.user.id
     selectedConversationRef.current = null
+    receivedEventsRef.current.clear()
 
     setUser(session.user)
     setAuthOpen(false)
@@ -123,6 +124,7 @@ export default function App() {
 
     selectedConversationRef.current = conversation
     setSelectedConversation(conversation)
+    setMessages([])
     setUnread((current) => ({ ...current, [conversationId]: 0 }))
     setMessageLoading(true)
     setMessageError('')
@@ -134,7 +136,10 @@ export default function App() {
       const nextMessages = normalizeMessages(data)
 
       if (selectedConversationRef.current?.id === conversationId) {
-        setMessages(nextMessages)
+        setMessages((current) => normalizeMessages([
+          ...nextMessages,
+          ...current.filter((item) => !nextMessages.some((incoming) => String(incoming.id) === String(item.id))),
+        ]))
       }
     } catch (err) {
       if (activeUserIdRef.current !== requestUserId) return
@@ -156,51 +161,51 @@ export default function App() {
 
   async function sendMessage(content) {
     const conversationId = selectedConversationRef.current?.id
-    const requestUserId = activeUserIdRef.current
-    if (!conversationId || !requestUserId) return false
+    if (!conversationId) return false
 
-    setSending(true)
     setMessageError('')
-
-    try {
-      await api.sendMessage(conversationId, content)
-      const data = await api.getMessages(conversationId)
-      if (activeUserIdRef.current !== requestUserId) return false
-
-      const nextMessages = normalizeMessages(data)
-
-      if (selectedConversationRef.current?.id === conversationId) {
-        setMessages(nextMessages)
-      }
-
-      loadConversations({ showLoading: false })
-      return true
-    } catch (err) {
-      if (activeUserIdRef.current !== requestUserId) return false
-
-      if (err.message?.toLowerCase().includes('session expired')) forceLogout()
-      else setMessageError(err.message || 'Could not send message.')
+    if (!sendSocketMessage({ message: content }, conversationId)) {
+      setMessageError('Chat is connecting. Try sending again when Live appears.')
       return false
-    } finally {
-      if (activeUserIdRef.current === requestUserId) setSending(false)
     }
+    // Backend broadcasts the saved message back to this user's group.
+    // Do not POST it via REST too: that would insert the message twice.
+    return true
   }
 
   const handleSocketMessage = useCallback((event) => {
-    // Future WebSocket-only notification path.
-    // This is inactive until VITE_WS_ENABLED=true and the backend WS contract exists.
-    if (event?.type !== 'message' || !event?.conversation_id || !event?.message) return
+    // Current Django consumer emits a flat frame with these fields.
+    if (
+      event?.id == null ||
+      event?.conversation_id == null ||
+      typeof event.message !== 'string' ||
+      !event.sender_id
+    ) return
 
-    const conversationId = Number(event.conversation_id)
+    const conversationId = String(event.conversation_id)
+    const senderId = String(event.sender_id)
+    const key = `${conversationId}:${event.id}`
+    if (receivedEventsRef.current.has(key)) return
+    receivedEventsRef.current.add(key)
+    if (receivedEventsRef.current.size > 500) {
+      receivedEventsRef.current.delete(receivedEventsRef.current.values().next().value)
+    }
 
-    if (selectedConversationRef.current?.id === conversationId) {
+    const incoming = {
+      id: event.id,
+      content: event.message,
+      created_at: event.created_at,
+      sender: { id: senderId },
+    }
+
+    if (String(selectedConversationRef.current?.id) === conversationId) {
       setMessages((current) => normalizeMessages(
-        current.some((item) => item.id === event.message.id)
+        current.some((item) => String(item.id) === String(incoming.id))
           ? current
-          : [...current, event.message],
+          : [...current, incoming],
       ))
       setUnread((current) => ({ ...current, [conversationId]: 0 }))
-    } else if (event.message.sender?.id !== activeUserIdRef.current) {
+    } else if (senderId !== String(activeUserIdRef.current)) {
       setUnread((current) => ({
         ...current,
         [conversationId]: (current[conversationId] || 0) + 1,
@@ -210,12 +215,23 @@ export default function App() {
     loadConversations({ showLoading: false })
   }, [loadConversations])
 
-  useChatSocket({
+  // A personal Redis group receives all conversations' events. The current
+  // backend still needs a conversation ID in the URL to send messages, so we
+  // keep one socket connected to the selected (or first available) conversation.
+  const socketConversationId = selectedConversation?.id ?? conversations[0]?.id ?? null
+  const {
+    status: socketStatus,
+    connectedConversationId,
+    send: sendSocketMessage,
+  } = useChatSocket({
     enabled: WS_ENABLED && Boolean(user),
     url: WS_URL,
-    accessToken: getAccessToken(),
+    conversationId: socketConversationId,
     onMessage: handleSocketMessage,
+    onAuthError: forceLogout,
   })
+  const socketReady = socketStatus === 'connected'
+    && String(connectedConversationId) === String(selectedConversation?.id)
 
   return (
     <div className="page-shell">
@@ -236,7 +252,7 @@ export default function App() {
           messages={messages}
           loading={messageLoading}
           error={messageError}
-          sending={sending}
+          socketReady={socketReady}
           onSend={sendMessage}
         />
       </div>
