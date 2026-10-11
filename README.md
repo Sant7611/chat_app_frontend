@@ -2,7 +2,7 @@
 
 A deliberately small React SPA for the Django/DRF backend in `Sant7611/chat_app`.
 
-WebSocket contract reviewed against backend commit `153269c29f9c8c0126e8d013593f4f09375b11b8` (2026-10-11, `ws completed`).
+Backend search and conversation contract reviewed against commit `316e2b5df53ac4924f81915538c3173b0073044f` (2026-10-11, `search and add new user`).
 
 ## Included
 
@@ -11,6 +11,8 @@ WebSocket contract reviewed against backend commit `153269c29f9c8c0126e8d013593f
 - JWT access + refresh handling
 - Logout
 - Conversation list
+- New chat popup: debounced search for users by username, full email (or current display name support)
+- Clicking a user reuses or creates their direct conversation and opens it
 - Conversation messages
 - Send messages through the WebSocket (avoids saving duplicate messages via HTTP)
 - One active WebSocket connection joined to the authenticated user's personal Redis group
@@ -26,10 +28,12 @@ WebSocket contract reviewed against backend commit `153269c29f9c8c0126e8d013593f
 - `POST /auth/logout/`
 - `POST /auth/token/refresh/`
 - `GET /chat/conversation/`
+- `POST /chat/conversation/` with `{ "other_user_id": "user-uuid" }`
+- `GET /chat/users/search/?q=<search-term>`
 - `GET /chat/conversation/:id/messages/`
 - `POST /chat/conversation/:id/messages/`
 
-The current backend has no user-list/search endpoint, so this frontend does not add a fake “find user” flow. It displays existing conversations only.
+The backend now supports searching up to 10 users via `GET /chat/users/search/?q=...`, and its `POST /chat/conversation/` checks for an existing conversation before creating one. The React frontend fetches the full conversation list after POST, resolves the returned `id`, and opens that chat. The search response currently exposes `id`, `display_name`, and `email`, **not `username`**, so username lookup works but the popup displays name/email. Email lookup is an exact match in the backend.
 
 ## Run locally
 
@@ -45,6 +49,16 @@ npm run dev
 Open `http://localhost:5173`.
 
 Vite proxies `/api/*` to `http://localhost:8000/*`, so local development does not require changing Django CORS settings.
+
+## Searching and starting a chat
+
+1. Click **New chat** in the conversations sidebar.
+2. Enter part of a username or a full email; results appear after a 300 ms debounce.
+3. Click a user. The frontend calls `POST /chat/conversation/` with `other_user_id`.
+4. The backend returns the existing or newly created conversation ID.
+5. The frontend reloads the list and opens that conversation, including its message history and WebSocket connection.
+
+The popup does not send messages or create duplicate conversations on its own. Only the backend can guarantee duplicate prevention across multiple simultaneous requests. The current backend's check may match a group conversation with both users if group chat is later added.
 
 ## Live messages and notifications
 
